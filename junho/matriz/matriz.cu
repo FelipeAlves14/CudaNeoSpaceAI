@@ -21,7 +21,9 @@ int main()
     int N;
     std::cin >> N;
     int lengthArray = N * N;
-    float *A, *AHost = new float[lengthArray], *B, *BHost = new float[lengthArray], *produto, *produtoHost = new float[lengthArray];
+    float *A, *AHost = new float[lengthArray],
+              *B, *BHost = new float[lengthArray],
+              *produto, *produtoHost = new float[lengthArray];
     cudaMalloc(&A, lengthArray * sizeof(float));
     cudaMalloc(&B, lengthArray * sizeof(float));
     cudaMalloc(&produto, lengthArray * sizeof(float));
@@ -47,5 +49,8 @@ int main()
         if ((i + 1) % N == 0)
             std::cout << std::endl;
     }
+    cudaFree(A);
+    cudaFree(B);
+    cudaFree(produto);
     return 0;
 }
