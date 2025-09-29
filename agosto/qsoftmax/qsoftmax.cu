@@ -1,37 +1,21 @@
+#include <cub/cub.cuh>
 #include <cuda_runtime.h>
 #include <iomanip>
 #include <iostream>
 #include <stdio.h>
 
-__global__ void softmax(float *softmax, int M)
+__global__ void softmax(float *softmax, float *softmaxTransform, int M, float maxValue)
 {
     int linha = blockIdx.x * blockDim.x + threadIdx.x;
     if (linha < M)
-    {
-        extern __shared__ float sdata[];
+        softmaxTransform[linha] = expf(softmax[linha] - maxValue);
+}
 
-        float max = softmax[linha * M];
-        for (int j = 1; j < M; j++)
-        {
-            float val = softmax[linha * M + j];
-            if (val > max)
-                max = val;
-        }
-
-        float soma = 0.0f;
-        for (int j = 0; j < M; j++)
-        {
-            int index = linha * M + j;
-            sdata[index] = expf(softmax[index] - max);
-            soma += sdata[index];
-        }
-
-        for (int j = 0; j < M; j++)
-        {
-            int index = linha * M + j;
-            softmax[index] = sdata[index] / soma;
-        }
-    }
+__global__ void resultSoftmax(float *softmaxTransform, float *result, int M, float sumValue)
+{
+    int linha = blockIdx.x * blockDim.x + threadIdx.x;
+    if (linha < M)
+        result[linha] = softmaxTransform[linha] / sumValue;
 }
 
 int main()
@@ -51,22 +35,49 @@ int main()
             break;
 
         int softmaxResultLength = C2 - C1 + 1;
-        float *softmaxResult, *softmaxResultHost = new float[softmaxResultLength];
+        float *softmaxResult, *softmaxResultHost = new float[softmaxResultLength],
+                              *maxSoftmaxValue,
+                              *softmaxTransform, *softmaxTransformHost = new float[softmaxResultLength],
+                              *sumSoftmaxValue;
+        float maxSoftmaxValueHost = 0.0f, sumSoftmaxValueHost = 0.0f;
         cudaMalloc(&softmaxResult, softmaxResultLength * sizeof(float));
+        cudaMalloc(&softmaxTransform, softmaxResultLength * sizeof(float));
+        cudaMalloc(&maxSoftmaxValue, sizeof(float));
+        cudaMalloc(&sumSoftmaxValue, sizeof(float));
 
         int linha = L * N;
         for (int i = C1, j = 0; i <= C2; i++, j++)
             softmaxResultHost[j] = matrizHost[linha + i];
         cudaMemcpy(softmaxResult, softmaxResultHost, softmaxResultLength * sizeof(float), cudaMemcpyHostToDevice);
 
+        void *tempStorage = nullptr;
+        size_t tempStorageBytes = 0;
+        cub::DeviceReduce::Max(tempStorage, tempStorageBytes, softmaxResult, maxSoftmaxValue, softmaxResultLength);
+        cudaMalloc(&tempStorage, tempStorageBytes);
+        cub::DeviceReduce::Max(tempStorage, tempStorageBytes, softmaxResult, maxSoftmaxValue, softmaxResultLength);
+        cudaFree(tempStorage);
+        cudaMemcpy(&maxSoftmaxValueHost, maxSoftmaxValue, sizeof(float), cudaMemcpyDeviceToHost);
+
         int threads = softmaxResultLength > 32 ? 32 : softmaxResultLength;
         int blocks = (softmaxResultLength + threads - 1) / threads;
-        softmax<<<blocks, threads, softmaxResultLength * sizeof(float)>>>(softmaxResult, softmaxResultLength);
+        softmax<<<blocks, threads, softmaxResultLength * sizeof(float)>>>(softmaxResult, softmaxTransform, softmaxResultLength, maxSoftmaxValueHost);
         cudaDeviceSynchronize();
+
+        void *tempStorage2 = nullptr;
+        size_t tempStorageBytes2 = 0;
+        cub::DeviceReduce::Sum(tempStorage2, tempStorageBytes2, softmaxTransform, sumSoftmaxValue, softmaxResultLength);
+        cudaMalloc(&tempStorage2, tempStorageBytes2);
+        cub::DeviceReduce::Sum(tempStorage2, tempStorageBytes2, softmaxTransform, sumSoftmaxValue, softmaxResultLength);
+        cudaFree(tempStorage2);
+        cudaMemcpy(&sumSoftmaxValueHost, sumSoftmaxValue, sizeof(float), cudaMemcpyDeviceToHost);
+
+        resultSoftmax<<<blocks, threads, softmaxResultLength * sizeof(float)>>>(softmaxTransform, softmaxResult, softmaxResultLength, sumSoftmaxValueHost);
+        cudaDeviceSynchronize();
+
         cudaMemcpy(softmaxResultHost, softmaxResult, softmaxResultLength * sizeof(float), cudaMemcpyDeviceToHost);
-        for (int j = C1; j <= C2; j++)
+        for (int j = 0; j < softmaxResultLength; j++)
         {
-            std::cout << std::fixed << std::setprecision(4) << softmaxResultHost[L * N + j];
+            std::cout << std::fixed << std::setprecision(4) << softmaxResultHost[j];
             if (j < C2)
                 std::cout << " ";
         }
@@ -74,5 +85,9 @@ int main()
         cudaFree(softmaxResult);
     }
     cudaFree(matriz);
+    cudaFree(softmaxResult);
+    cudaFree(maxSoftmaxValue);
+    cudaFree(softmaxTransform);
+    cudaFree(sumSoftmaxValue);
     return 0;
 }
